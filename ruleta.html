@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ruleta SIS — Animador</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #f5f5f0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 1.5rem 1rem; gap: 1.25rem; }
+  .sis-big { font-size: 48px; font-weight: 900; color: #D85A30; letter-spacing: 10px; line-height: 1; text-align: center; }
+  .sis-sub { font-size: 12px; color: #1D4E1A; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; text-align: center; margin-top: 2px; }
+  .status-bar { background:#fff; border-radius:10px; padding:8px 20px; font-size:12px; color:#888; border:1px solid #eee; display:flex; align-items:center; gap:8px; }
+  .status-dot { width:8px; height:8px; border-radius:50%; background:#ccc; flex-shrink:0; }
+  .status-dot.ok { background:#1D4E1A; }
+  .status-dot.err { background:#D85A30; }
+  .wheel-outer { position:relative; width:300px; height:300px; }
+  .pointer { position:absolute; top:-16px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:14px solid transparent; border-right:14px solid transparent; border-top:28px solid #1D4E1A; z-index:10; }
+  canvas { border-radius:50%; display:block; }
+  .center-btn { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:60px; height:60px; border-radius:50%; background:#fff; border:3px solid #1D4E1A; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:11px; font-weight:800; color:#1D4E1A; letter-spacing:1px; z-index:10; }
+  .spin-btn { padding:14px 48px; background:#1D4E1A; color:#fff; border:none; border-radius:50px; font-size:16px; font-weight:700; cursor:pointer; }
+  .spin-btn:disabled { background:#aaa; cursor:not-allowed; }
+  .result-card { background:#fff; border-radius:16px; padding:1.25rem 2rem; text-align:center; width:100%; max-width:340px; border:2px solid #eee; min-height:90px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; }
+  .result-card.active { border-color:#D85A30; }
+  .result-num { font-size:52px; font-weight:900; color:#D85A30; line-height:1; }
+  .result-frase { font-size:13px; color:#555; line-height:1.5; max-width:280px; }
+  .result-placeholder { font-size:14px; color:#bbb; }
+  .used-section { width:100%; max-width:340px; }
+  .used-title { font-size:11px; font-weight:700; color:#999; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; }
+  .used-title span { color:#1D4E1A; font-size:13px; }
+  .nums-grid { display:grid; grid-template-columns:repeat(8,1fr); gap:5px; }
+  .npill { aspect-ratio:1; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; background:#eee; color:#aaa; }
+  .npill.used { background:#EEEDFE; color:#3C3489; }
+  .npill.last { background:#D85A30; color:#fff; }
+  .reset-btn { background:transparent; border:1.5px solid #ccc; color:#888; padding:7px 18px; border-radius:50px; font-size:12px; font-weight:600; cursor:pointer; margin-top:10px; }
+  .players-section { width:100%; max-width:340px; background:#fff; border-radius:12px; padding:1rem; border:1px solid #eee; }
+  .players-title { font-size:11px; font-weight:700; color:#999; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
+  .players-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+  .player-chip { aspect-ratio:1; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; background:#f0f0f0; color:#bbb; transition:background .3s,color .3s; }
+  .player-chip.connected { background:#E1F5EE; color:#085041; }
+</style>
+</head>
+<body>
+
+<div class="sis-big">S I S</div>
+<div class="sis-sub">Semillero de Ingeniería y Sociedad — Animador</div>
+
+<div class="status-bar">
+  <div class="status-dot" id="status-dot"></div>
+  <span id="status-text">Conectando...</span>
+</div>
+
+<div class="wheel-outer">
+  <div class="pointer"></div>
+  <canvas id="wheel" width="300" height="300"></canvas>
+  <div class="center-btn" onclick="spin()">GIRAR</div>
+</div>
+
+<button class="spin-btn" id="spin-btn" onclick="spin()">Sortear número</button>
+
+<div class="result-card" id="result-card">
+  <div class="result-placeholder">Gira para sortear el primer número</div>
+</div>
+
+<div class="used-section">
+  <div class="used-title">Números sorteados <span id="used-count">0 / 24</span></div>
+  <div class="nums-grid" id="nums-grid"></div>
+  <button class="reset-btn" onclick="resetGame()">Reiniciar juego</button>
+</div>
+
+<div class="players-section">
+  <div class="players-title">Jugadores conectados (1–14)</div>
+  <div class="players-grid" id="players-grid"></div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://nlaxdfsewneudvrpqfqv.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sYXhkZnNld25ldWR2cnBxZnF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyMjMzMjAsImV4cCI6MjA5Njc5OTMyMH0.pgWPxNlloGxM04SAfB7mkuid_Rk3VgPbYSGPC0GDIHs';
+const GAME_ID = 'sis-2026-1';
+const { createClient } = supabase;
+const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const FRASES = [
+  "Siempre aporta ideas nuevas en las reuniones",
+  "Explica los temas difíciles con mucha claridad",
+  "Nunca deja a un compañero sin respuesta",
+  "Su energía anima al grupo cuando hay estrés",
+  "Tiene una disciplina de trabajo admirable",
+  "Siempre llega puntual a las reuniones",
+  "Sus presentaciones son claras y bien organizadas",
+  "Aprendió algo nuevo y lo compartió con todos",
+  "Es el primero en ofrecer ayuda cuando alguien necesita",
+  "Tiene una curiosidad que contagia al resto del grupo",
+  "Mantuvo la calma en los momentos más caóticos",
+  "Su sentido del humor alegra las reuniones largas",
+  "Entregó algo de gran calidad este semestre",
+  "Escucha con atención antes de responder",
+  "Propuso una solución que nadie más había pensado",
+  "Creció visiblemente como investigador/a este semestre",
+  "Siempre da retroalimentación constructiva",
+  "Se adaptó bien a los cambios de plan",
+  "Motivó al grupo en un momento difícil",
+  "Tiene una capacidad especial para encontrar los errores",
+  "Su dedicación es un ejemplo para el semillero",
+  "Conecta ideas de distintas áreas con facilidad",
+  "Fue clave en al menos un logro del semestre",
+  "Termina lo que empieza, sin importar los obstáculos"
+];
+
+const PALETTE = [
+  {fill:"#1D4E1A",text:"#fff"},
+  {fill:"#2E7D32",text:"#fff"},
+  {fill:"#A8D5A2",text:"#1D4E1A"},
+  {fill:"#B8D8F0",text:"#1D4E1A"},
+  {fill:"#D85A30",text:"#fff"}
+];
+
+function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
+
+function generateCartones(){
+  const base = shuffle([...Array(24).keys()].map(i=>i+1));
+  const cartones = {};
+  for(let i=0;i<14;i++){
+    const offset=(i*12)%24;
+    let nums=[];
+    for(let j=0;j<12;j++) nums.push(base[(offset+j)%24]);
+    cartones[String(i+1)] = shuffle(nums);
+  }
+  return cartones;
+}
+
+const canvas = document.getElementById('wheel');
+const ctx = canvas.getContext('2d');
+const CX=150, CY=150, R=144;
+let pool=[], used=[], spinning=false, angle=0;
+
+function setStatus(ok,msg){ document.getElementById('status-dot').className='status-dot '+(ok?'ok':'err'); document.getElementById('status-text').textContent=msg; }
+
+async function initGame(){
+  try {
+    let { data } = await db.from('sis_juego').select('*').eq('id',GAME_ID).single();
+    if(!data){
+      const cartones = generateCartones();
+      await db.from('sis_juego').insert({id:GAME_ID, numeros_sorteados:[], cartones, activo:true});
+      data = {numeros_sorteados:[], cartones};
+    }
+    used = data.numeros_sorteados || [];
+    pool = shuffle([...Array(24).keys()].map(i=>i+1).filter(n=>!used.includes(n)));
+    setStatus(true,'Conectado — juego activo');
+    drawWheel(); renderNums(); renderPlayers([]);
+    setupPresence();
+  } catch(e){ setStatus(false,'Error: '+e.message); }
+}
+
+function setupPresence(){
+  const ch = db.channel('sis-presence');
+  ch.on('presence',{event:'sync'},()=>{
+    const state = ch.presenceState();
+    const ids = Object.values(state).flat().map(p=>p.carton_id).filter(Boolean);
+    renderPlayers(ids);
+  }).subscribe();
+}
+
+function renderPlayers(ids){
+  const grid=document.getElementById('players-grid');
+  grid.innerHTML='';
+  for(let i=1;i<=14;i++){
+    const d=document.createElement('div');
+    d.className='player-chip'+(ids.includes(i)?' connected':'');
+    d.textContent=i; grid.appendChild(d);
+  }
+}
+
+function drawWheel(){
+  const n=pool.length;
+  ctx.clearRect(0,0,300,300);
+  if(n===0){
+    ctx.beginPath(); ctx.arc(CX,CY,R,0,2*Math.PI); ctx.fillStyle='#eee'; ctx.fill();
+    ctx.fillStyle='#aaa'; ctx.font='bold 13px Segoe UI'; ctx.textAlign='center'; ctx.fillText('Todos sorteados',CX,CY+5);
+    return;
+  }
+  const slice=(2*Math.PI)/n;
+  pool.forEach((num,i)=>{
+    const start=angle+i*slice, end=start+slice;
+    const color=PALETTE[(num-1)%PALETTE.length];
+    ctx.beginPath(); ctx.moveTo(CX,CY); ctx.arc(CX,CY,R,start,end); ctx.closePath();
+    ctx.fillStyle=color.fill; ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.stroke();
+    ctx.save(); ctx.translate(CX,CY); ctx.rotate(start+slice/2);
+    ctx.textAlign='right'; ctx.fillStyle=color.text;
+    ctx.font=`bold ${n<=12?16:12}px Segoe UI`;
+    ctx.fillText(num,R-10,6); ctx.restore();
+  });
+  ctx.beginPath(); ctx.arc(CX,CY,28,0,2*Math.PI);
+  ctx.fillStyle='#fff'; ctx.fill(); ctx.strokeStyle='#1D4E1A'; ctx.lineWidth=3; ctx.stroke();
+}
+
+function spin(){
+  if(spinning||pool.length===0) return;
+  spinning=true;
+  document.getElementById('spin-btn').disabled=true;
+
+  const n=pool.length;
+  const slice=(2*Math.PI)/n;
+  const pickedIdx=Math.floor(Math.random()*n);
+  const pickedNum=pool[pickedIdx];
+
+  const normalizedCurrent=angle%(2*Math.PI);
+  const targetOffset=-(pickedIdx*slice+slice/2);
+  let diff=targetOffset-normalizedCurrent;
+  if(diff>0) diff-=2*Math.PI;
+  const extraSpins=(5+Math.floor(Math.random()*4))*2*Math.PI;
+  const finalAngle=angle+extraSpins+diff;
+  const duration=4000+Math.random()*800;
+  const startAngle=angle;
+  const startTime=performance.now();
+  function easeOut(t){return 1-Math.pow(1-t,4);}
+
+  function animate(now){
+    const t=Math.min((now-startTime)/duration,1);
+    angle=startAngle+(finalAngle-startAngle)*easeOut(t);
+    drawWheel();
+    if(t<1){ requestAnimationFrame(animate); }
+    else {
+      angle=finalAngle; drawWheel(); spinning=false;
+      pool.splice(pickedIdx,1);
+      used.push(pickedNum);
+      showResult(pickedNum);
+      renderNums();
+      saveToSupabase();
+      if(pool.length===0) document.getElementById('spin-btn').textContent='Todos sorteados';
+      else document.getElementById('spin-btn').disabled=false;
+    }
+  }
+  requestAnimationFrame(animate);
+}
+
+function showResult(num){
+  const card=document.getElementById('result-card');
+  card.className='result-card active';
+  card.innerHTML=`<div class="result-num">${num}</div><div class="result-frase">${FRASES[num-1]}</div>`;
+}
+
+async function saveToSupabase(){
+  try { await db.from('sis_juego').update({numeros_sorteados:used}).eq('id',GAME_ID); }
+  catch(e){ setStatus(false,'Error guardando: '+e.message); }
+}
+
+async function resetGame(){
+  if(!confirm('¿Reiniciar? Se borran todos los números sorteados y se generan nuevos cartones.')) return;
+  const cartones=generateCartones();
+  used=[]; pool=shuffle([...Array(24).keys()].map(i=>i+1)); angle=0;
+  document.getElementById('spin-btn').disabled=false;
+  document.getElementById('spin-btn').textContent='Sortear número';
+  document.getElementById('result-card').className='result-card';
+  document.getElementById('result-card').innerHTML='<div class="result-placeholder">Gira para sortear el primer número</div>';
+  await db.from('sis_juego').update({numeros_sorteados:[], cartones, activo:true}).eq('id',GAME_ID);
+  drawWheel(); renderNums();
+}
+
+function renderNums(){
+  const grid=document.getElementById('nums-grid');
+  const last=used[used.length-1];
+  grid.innerHTML='';
+  for(let i=1;i<=24;i++){
+    const d=document.createElement('div');
+    d.className='npill'+(i===last?' last':used.includes(i)?' used':'');
+    d.textContent=i; grid.appendChild(d);
+  }
+  document.getElementById('used-count').textContent=used.length+' / 24';
+}
+
+initGame();
+</script>
+</body>
+</html>
